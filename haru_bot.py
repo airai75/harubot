@@ -5,176 +5,220 @@ import os
 import random
 import asyncio
 from datetime import datetime, timedelta, time
-import pytz # タイムゾーン扱うために追加 (pip install pytz が必要かも)
+import pytz # タイムゾーン扱うために追加
+from dotenv import load_dotenv
 
 # --- 秘密の鍵を読み込む ---
-from dotenv import load_dotenv
-load_dotenv() # .env ファイルから秘密の鍵を読み込む
+load_dotenv() 
 
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+TARGET_CHANNEL_ID_STR = os.getenv('TARGET_CHANNEL_ID') # 発言するチャンネルID
 
 # --- Botの設定 ---
-# 必要な権限（インテント）を設定
 intents = discord.Intents.default()
-intents.messages = True         # メッセージの受信
-intents.message_content = True  # メッセージの内容を読む
-bot = discord.Client(intents=intents) # Clientでシンプルに作る
+intents.messages = True
+intents.message_content = True
+bot = discord.Client(intents=intents)
 
 # --- Gemini（脳みソ）の設定 ---
 try:
     genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash') # 最新の高速モデル
+    model = genai.GenerativeModel('gemini-1.5-flash')
     print("Gemini（脳みソ）の準備OK！")
 except Exception as e:
     print(f"！！！エラー：Geminiに接続できませんでした。APIキーは合ってる？: {e}")
-    exit() # GeminiがダメならBot動いても意味ないので終了
+    exit()
 
 # --- Botが使う変数（状態を記憶する） ---
-last_checked_time = None # 最後にチェックした時間
-is_first_check_of_day = True # その日の初回チェックか
-did_daily_tweet = False # 日常ツイートしたか
-
-# 日本のタイムゾーン
+last_checked_time = None 
+is_first_check_of_day = True
+did_daily_tweet = False
 JST = pytz.timezone('Asia/Tokyo')
+
+# ★★★ 「初回起動」をチェックするためのファイル名 ★★★
+FIRST_BOOT_FLAG_FILE = "first_boot.flag" # このファイルがあるかで初回起動を判断
 
 # ----------------------------------------
 # ★★★ 神ロジックの「核」！★★★
-# (「浮上タイミング」をチェックし続けるループ処理)
+# (60秒に1回、この関数が動く)
 # ----------------------------------------
-@tasks.loop(seconds=60) # 60秒に1回、この関数が動く
+@tasks.loop(seconds=60)
 async def check_activity_loop():
-    global last_checked_time, is_first_check_of_day, did_daily_tweet
+    global last_checked_time, is_first_check_of_day, did_daily_tweet, JST, TARGET_CHANNEL_ID_STR, model
     
     try:
+        # --- 日付リセット処理 ---
+        now_for_reset = datetime.now(JST)
+        if last_checked_time and last_checked_time.date() != now_for_reset.date():
+            print(f"--- {now_for_reset.strftime('%Y-%m-%d')} ---")
+            print("日付が変わりました！フラグをリセットします。")
+            is_first_check_of_day = True
+            did_daily_tweet = False
+            last_checked_time = None 
+
         # --- 今が「浮上タイミング」か計算する ---
         now = datetime.now(JST)
-        is_holiday = now.weekday() >= 5 # 土日か？ (5=土, 6=日)
+        is_holiday = now.weekday() >= 5 # 土日か？
         
-        # 浮上する時間リスト
-        # (平日: 21, 22, 23時 / 休日: 18, 19, 20, 21, 22, 23時)
         target_hours = []
         if is_holiday:
-            target_hours = [18, 19, 20, 21, 22, 23]
+            target_hours = [18, 19, 20, 21, 22, 23] # 休日: 18時～23時
         else:
-            target_hours = [21, 22, 23]
+            target_hours = [21, 22, 23] # 平日: 21時～23時
             
-        # 今が「浮上すべき時間帯」か？
         if now.hour not in target_hours:
             # print(f"({now.strftime('%H:%M:%S')}) 浮上時間外です。") # デバッグ用
+            last_checked_time = now
             return # 浮上時間じゃないなら何もしない
             
         # --- 浮上タイミング！（±5分ランダムをここでチェック） ---
-        
-        # （簡易的な実装：その時間の「最初の10分間」の「どこか」で1回だけ動くようにする）
-        # ※本当はもっと厳密に「±5分」を計算すべきだけど、まずはシンプルに！
-        
-        # 毎時0分～9分の間に、1回だけ動かす
         if now.minute >= 10:
-             # print(f"({now.strftime('%H:%M:%S')}) {now.hour}時のチェック時間は過ぎました。") # デバッグ用
+            # print(f"({now.strftime('%H:%M:%S')}) {now.hour}時のチェック時間は過ぎました。") # デバッグ用
             return
             
-        # この時間帯に、もうチェックしてないか？
-        if last_checked_time and last_checked_time.hour == now.hour:
+        if last_checked_time and last_checked_time.hour == now.hour and last_checked_time.minute < 10:
             # print(f"({now.strftime('%H:%M:%S')}) {now.hour}時はもうチェック済みです。") # デバッグ用
             return
 
         # --- よっしゃ！浮上するぜ！ ---
-        # （ランダムな秒数、待機して「人間っぽさ」を出す）
         await asyncio.sleep(random.randint(1, 10)) # 1～10秒待つ
         
         print(f"--- ( {now.strftime('%Y-%m-%d %H:%M:%S')} ) ---")
         print(f"★★★ 浮上タイミング！ チェック開始！ ★★★")
         
-        # ステータスを「勉強中」とか「受験期」っぽくする（カスタムステータス）
-        # ※Botのカスタムステータス設定はちょっと複雑なので、まずは「オンライン」にするだけ
         await bot.change_presence(status=discord.Status.online)
         
-        # タイピング中にして「人間っぽさ」を出す
-        # (発言するチャンネルIDが必要。ここでは仮に 'YOUR_CHANNEL_ID' としてる)
-        # channel = bot.get_channel(YOUR_CHANNEL_ID) # ← ★★★ ここは後で設定 ★★★
-        # if channel:
-        #     async with channel.typing():
-        #         await asyncio.sleep(random.randint(2, 5)) # 2～5秒タイピング中…
+        # --- チャンネルIDが設定されてるかチェック（最重要） ---
+        if not TARGET_CHANNEL_ID_STR:
+            print("！！！エラー： TARGET_CHANNEL_ID が設定されていません。発言できません。")
+            await bot.change_presence(status=discord.Status.invisible) # オフラインに戻る
+            last_checked_time = now # チェック時間は記録
+            return 
+            
+        try:
+            target_channel_id_int = int(TARGET_CHANNEL_ID_STR)
+            channel = bot.get_channel(target_channel_id_int) 
+            if not channel:
+                print(f"！！！エラー： チャンネルID ({TARGET_CHANNEL_ID_STR}) が見つかりません。")
+                await bot.change_presence(status=discord.Status.invisible) # オフラインに戻る
+                last_checked_time = now # チェック時間は記録
+                return
+        except Exception as e:
+            print(f"！！！エラー： チャンネルIDが無効です。: {e}")
+            await bot.change_presence(status=discord.Status.invisible) # オフラインに戻る
+            last_checked_time = now # チェック時間は記録
+            return
 
-        # ----------------------------------
-        # ★★★ ここにロジックを足していく ★★★
-        # ----------------------------------
+        # --- ここから発言ロジック ---
         
+        # タイピング中にして「人間っぽさ」を出す
+        async with channel.typing():
+            await asyncio.sleep(random.randint(2, 5)) # 2～5秒タイピング中…
+
         # (ロジックC) 定時連絡（ロールプレイ）
-        # その日初の浮上？
         if is_first_check_of_day:
             print("[ロジックC] 今日初の浮上！受験生ツイートします。")
-            # prompt = "僕は受験期の男子高校生。塾や勉強で疲れたー、みたいな日常的なツイートを1個、タメ口で短く作って。"
-            # response = model.generate_content(prompt)
-            # await channel.send(response.text) # ← ★★★ チャンネル設定したら動かす ★★★
+            # ★★★ 「可愛げ男子」設定に書き換え！ ★★★
+            prompt = "君は「ハル」。受験期の男子高校生。口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「塾終わったー疲れたー」みたいな感じの、日常ツイートを1個作って。（例：つかれたー（＞＜）"
+            response = await model.generate_content_async(prompt) 
+            await channel.send(response.text)
             is_first_check_of_day = False
-            did_daily_tweet = True # 定時連絡したら日常ツイートはしない
+            did_daily_tweet = True 
 
         # (ロジックC) 寝るツイート
-        if now.hour == 23:
+        elif now.hour == 23: 
             print("[ロジックC] 23時だ！寝るツイートします。")
-            # prompt = "僕は受験期の男子高校生。「そろそろ寝るわー」みたいな感じの、おやすみツイートを1個、タメ口で短く作って。"
-            # response = model.generate_content(prompt)
-            # await channel.send(response.text) # ← ★★★ チャンネル設定したら動かす ★★★
+            # ★★★ 「可愛げ男子」設定に書き換え！ ★★★
+            prompt = "君は「ハル」。受験期の男子高校生で、口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「そろそろ寝るわー」みたいな感じの、おやすみツイートを1個作って。（例：も、限界（＞＜）おやすみー！）"
+            response = await model.generate_content_async(prompt) 
+            await channel.send(response.text)
             
         # (ロジックD) 日常ツイート（1日1回）
-        if not did_daily_tweet:
+        elif not did_daily_tweet: 
             print("[ロジックD] 日常ツイートします。")
-            # prompt = "僕は受験期の男子高校生。「ラーメン食いたい」とか「今日寒い」みたいな、勉強とは関係ない日常ツイートを1個、タメ口で短く作って。"
-            # response = model.generate_content(prompt)
-            # await channel.send(response.text) # ← ★★★ チャンネル設定したら動かす ★★★
+            # ★★★ 「可愛げ男子」設定に書き換え！ ★★★
+            prompt = "君は「ハル」。受験期の男子高校生で、口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「甘いもの食べたい」とか「今日寒いなー」みたいな、勉強とは関係ない何気ない日常ツイートを1個作って。"
+            response = await model.generate_content_async(prompt)
+            await channel.send(response.text)
             did_daily_tweet = True
-
 
         # (ロジックA) メンション確認
         print("[ロジックA] メンション確認します（まだ機能してません）")
-        # ★★★ ここに「前回の浮上時間から今までのメンション」を探すコードを書く ★★★
         
         # (ロジックB) エゴサ確認
         print("[ロジックB] エゴサ確認します（まだ機能してません）")
-        # ★★★ ここに「直近10件に自分の発言があるか」探すコードを書く ★★★
 
-
-        # ----------------------------------
-        # チェック完了！
-        # ----------------------------------
-        print("★★★ チェック完了！ 次の浮上まで待機します。★★★")
+        # --- チェック完了！ ---
+        print("★★★ チェック完了！ オフラインに戻ります。★★★")
         
-        # 「オフライン」に戻して人間っぽさを出す
         await bot.change_presence(status=discord.Status.invisible)
-        
-        # 最後にチェックした時間を記録
         last_checked_time = now
         
     except Exception as e:
         print(f"！！！エラー：ループ処理中に何か起きました: {e}")
+        await bot.change_presence(status=discord.Status.invisible)
+        last_checked_time = now 
+
 
 # ----------------------------------------
 # Botが起動したときに呼ばれる処理
 # ----------------------------------------
 @bot.event
 async def on_ready():
+    global last_checked_time, JST, TARGET_CHANNEL_ID_STR, FIRST_BOOT_FLAG_FILE, model
+    
     print(f'--- {bot.user} (ハル) がDiscordにログインしました ---')
     print('受験期モード、起動します...')
-    
-    # 毎日0時（JST）にフラグをリセットするタスクも入れたいけど、まずはシンプルに
-    # （Botが動いてる日付が変わったらリセットする）
-    
-    # 浮上タイミングのチェックループを開始！
+
+    # ----------------------------------
+    # ★★★ 初回起動メッセージ（君のリクエスト！） ★★★
+    # ----------------------------------
+    if not TARGET_CHANNEL_ID_STR:
+        print("！！！警告： TARGET_CHANNEL_ID が設定されてないため、初回起動メッセージは送れません。")
+    else:
+        if not os.path.exists(FIRST_BOOT_FLAG_FILE):
+            print("★★★ 初回起動を検知！ ★★★")
+            try:
+                target_channel_id_int = int(TARGET_CHANNEL_ID_STR)
+                channel = bot.get_channel(target_channel_id_int)
+                if channel:
+                    # ★★★ 「可愛げ男子」設定に書き換え！ ★★★
+                    prompt = "君は「ハル」。受験期の男子高校生で、今日からこのDiscordサーバーに参加する。口調はフレンドリーで可愛げがある（顔文字もたまに使う）。『よろしく！』みたいな、初参加の挨拶を考えて。アイコンは趣味の女の子だけど、中身は男だからね！(・∀・)"
+                    response = await model.generate_content_async(prompt) 
+                    
+                    async with channel.typing():
+                        await asyncio.sleep(random.randint(2, 5))
+                    
+                    await channel.send(response.text)
+                    print(f"初回起動メッセージを {channel.name} に送信しました。")
+                    
+                    with open(FIRST_BOOT_FLAG_FILE, 'w') as f:
+                        f.write(datetime.now(JST).isoformat())
+                    print(f"「{FIRST_BOOT_FLAG_FILE}」を作成しました。もう初回起動メッセージは送りません。")
+                
+                else:
+                    print(f"！！！エラー： 初回起動メッセージを送るチャンネルID ({TARGET_CHANNEL_ID_STR}) が見つかりません。")
+            
+            except Exception as e:
+                print(f"！！！エラー： 初回起動メッセージの送信に失敗しました: {e}")
+        else:
+            print(f"「{FIRST_BOOT_FLAG_FILE}」が存在するため、初回起動メッセージはスキップします。")
+
+    # ----------------------------------
+
+    last_checked_time = datetime.now(JST) - timedelta(days=1) 
     check_activity_loop.start()
-    
-    # 最初は「オフライン（透明）」になって潜伏する
     await bot.change_presence(status=discord.Status.invisible)
 
 # ----------------------------------------
 # Botを起動！
 # ----------------------------------------
-if DISCORD_TOKEN:
+if DISCORD_TOKEN and GEMINI_API_KEY:
     try:
         print("「ハル」を起動します...")
         bot.run(DISCORD_TOKEN)
     except Exception as e:
         print(f"！！！エラー：Botの起動に失敗しました。Discordトークンは合ってる？: {e}")
 else:
-    print("！！！エラー：DISCORD_TOKEN が .env ファイルに設定されていません。")
+    print("！！！エラー： DISCORD_TOKEN か GEMINI_API_KEY が .env (Secrets) に設定されていません。")
