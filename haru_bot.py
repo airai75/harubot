@@ -84,6 +84,7 @@ async def check_activity_loop():
             return
 
         # --- よっしゃ！浮上するぜ！ ---
+        # (★タイポ修正済みのつもり！)
         await asyncio.sleep(random.randint(1, 10)) # 1～10秒待つ
         
         print(f"--- ( {now.strftime('%Y-%m-%d %H:%M:%S')} ) ---")
@@ -175,4 +176,109 @@ async def check_activity_loop():
             if "スルー" not in response.text:
                 print("[ロジックA] Geminiが「返事すべき」と判断。返信します。")
                 async with channel.typing():
-                    await asyncio.sleep(random.
+                    # (★タイポ修正済みのつもり！)
+                    await asyncio.sleep(random.randint(2, 5))
+                await channel.send(response.text)
+                did_speak_in_this_float = True
+            else:
+                print("[ロジックA] Geminiが「スルーすべき」と判断しました。")
+                
+            # 「ここまで読んだ」時間を、処理したメンションの時間に更新
+            last_mention_check_time = oldest_mention.created_at.astimezone(JST)
+
+        else:
+            print("[ロジックA] 新しいメンションはありませんでした。")
+            # メンションがなくても、「ここまで読んだ」時間は最新に更新
+            last_mention_check_time = now
+            
+
+        # (ロジックC) 定時連絡（ロールプレイ）
+        # ----------------------------------
+        # ※メンションに返事した浮上タイミングでは、定時連絡はしない（人間っぽい）
+        if not did_speak_in_this_float:
+            if is_first_check_of_day:
+                print("[ロジックC] 今日初の浮上！受験生ツイートします。")
+                prompt = "君は「ハル」。受験期の男子高校生。口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「塾終わったー疲れたー」みたいな感じの、日常ツイートを1個作って。（例：つかれたー（＞＜）"
+                response = await model.generate_content_async(prompt) 
+                async with channel.typing():
+                    # (★タイポ修正済みのつもり！)
+                    await asyncio.sleep(random.randint(2, 5))
+                await channel.send(response.text)
+                did_speak_in_this_float = True # 発言したフラグ
+                is_first_check_of_day = False
+                did_daily_tweet = True 
+
+            elif now.hour == 23: 
+                print("[ロジックC] 23時だ！寝るツイートします。")
+                prompt = "君は「ハル」。受験期の男子高校生で、口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「そろそろ寝るわー」みたいな感じの、おやすみツイートを1個作って。（例：も、限界（＞＜）おやすみー！）"
+                response = await model.generate_content_async(prompt)
+                async with channel.typing():
+                    # (★タイポ修正済みのつもり！)
+                    await asyncio.sleep(random.randint(2, 5)) 
+                await channel.send(response.text)
+                did_speak_in_this_float = True # 発言したフラグ
+                
+            elif not did_daily_tweet: 
+                print("[ロジックD] 日常ツイートします。")
+                prompt = "君は「ハル」。受験期の男子高校生で、口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「甘いもの食べたい」とか「今日寒いなー」みたいな、勉強とは関係ない何気ない日常ツイートを1個作って。"
+                response = await model.generate_content_async(prompt)
+                async with channel.typing():
+                    # (★タイポ修正済みのつもり！)
+                    await asyncio.sleep(random.randint(2, 5)) 
+                await channel.send(response.text)
+                did_speak_in_this_float = True # 発言したフラグ
+                did_daily_tweet = True
+
+        # (ロジックB) エゴサ確認
+        # ----------------------------------
+        # ※「メンション（リプライ含む）」で拾うことにしたので、エゴサ（リプライじゃない言及）は
+        #    Botの負荷も考えて、いったん「やらない」でおこう！
+        print("[ロジックB] エゴサ確認（リプライ）はロジックAに統合しました。")
+
+
+        # --- チェック完了！ ---
+        if did_speak_in_this_float:
+            print("★★★ 発言したので、オフラインに戻ります。★★★")
+        else:
+            print("★★★ 発言せず。オフラインに戻ります。★★★")
+        
+        await bot.change_presence(status=discord.Status.invisible)
+        last_checked_time = now # 「浮上チェック」の時間は最後に更新
+        
+    except Exception as e:
+        print(f"！！！エラー：ループ処理中に何か起きました: {e}")
+        await bot.change_presence(status=discord.Status.invisible)
+        last_checked_time = datetime.now(JST) # エラー時も時間は更新
+        last_mention_check_time = datetime.now(JST) # エラー時も時間は更新
+
+
+# ----------------------------------------
+# Botが起動したときに呼ばれる処理
+# ----------------------------------------
+@bot.event
+async def on_ready():
+    global last_checked_time, JST, TARGET_CHANNEL_ID_STR, FIRST_BOOT_FLAG_FILE, model, last_mention_check_time
+    
+    print(f'--- {bot.user} (ハル) がDiscordにログインしました ---')
+    print('受験期モード、起動します...')
+
+    # ----------------------------------
+    # ★★★ 初回起動メッセージ ★★★
+    # ----------------------------------
+    if not TARGET_CHANNEL_ID_STR:
+        print("！！！警告： TARGET_CHANNEL_ID が設定されてないため、初回起動メッセージは送れません。")
+    else:
+        if not os.path.exists(FIRST_BOOT_FLAG_FILE):
+            print("★★★ 初回起動を検知！ ★★★")
+            try:
+                target_channel_id_int = int(TARGET_CHANNEL_ID_STR)
+                channel = bot.get_channel(target_channel_id_int)
+                if channel:
+                    prompt = "君は「ハル」。受験期の男子高校生で、今日からこのDiscordサーバーに参加する。口調はフレンドリーで可愛げがある（顔文字もたまに使う）。『よろしく！』みたいな、初参加の挨拶を考えて。アイコンは趣味の女の子だけど、中身は男だからね！(・∀・)"
+                    response = await model.generate_content_async(prompt) 
+                    
+                    async with channel.typing():
+                        # (★タイポ修正済みのつもり！)
+                        await asyncio.sleep(random.randint(2, 5))
+                    
+                    await channel.send(response
