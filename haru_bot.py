@@ -281,4 +281,43 @@ async def on_ready():
                         # (★タイポ修正済みのつもり！)
                         await asyncio.sleep(random.randint(2, 5))
                     
-                    await channel.send(response
+                    await channel.send(response.text)
+                    print(f"初回起動メッセージを {channel.name} に送信しました。")
+                    
+                    with open(FIRST_BOOT_FLAG_FILE, 'w') as f:
+                        f.write(datetime.now(JST).isoformat())
+                    print(f"「{FIRST_BOOT_FLAG_FILE}」を作成しました。もう初回起動メッセージは送りません。")
+                
+                else:
+                    print(f"！！！エラー： 初回起動メッセージを送るチャンネルID ({TARGET_CHANNEL_ID_STR}) が見つかりません。")
+            
+            except Exception as e:
+                print(f"！！！エラー： 初回起動メッセージの送信に失敗しました: {e}")
+        else:
+            print(f"「{FIRST_BOOT_FLAG_FILE}」が存在するため、初回起動メッセージはスキップします。")
+
+    # ----------------------------------
+
+    # 「最後にチェックした時間」を「昨日」と「今」で初期化
+    # (こうしないと、起動直後に前日のメンションまで拾っちゃう)
+    print("チェック時間を現在時刻に初期化します。")
+    last_checked_time = datetime.now(JST) - timedelta(days=1) # 「浮上」時間は昨日（日付リセットのため）
+    last_mention_check_time = datetime.now(JST) # 「メンション」は今（これ以降のメンションを拾う）
+    
+    # ループを開始
+    check_activity_loop.start()
+    
+    # 最初は「オフライン（透明）」になって潜伏する
+    await bot.change_presence(status=discord.Status.invisible)
+
+# ----------------------------------------
+# Botを起動！
+# ----------------------------------------
+if DISCORD_TOKEN and GEMINI_API_KEY:
+    try:
+        print("「ハル」を起動します...")
+        bot.run(DISCORD_TOKEN)
+    except Exception as e:
+        print(f"！！！エラー：Botの起動に失敗しました。Discordトークンは合ってる？: {e}")
+else:
+    print("！！！エラー： DISCORD_TOKEN か GEMINI_API_KEY が .env (Secrets) に設定されていません。")
