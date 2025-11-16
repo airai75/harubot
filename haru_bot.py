@@ -16,10 +16,10 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 TARGET_CHANNEL_ID_STR = os.getenv('TARGET_CHANNEL_ID') # 発言するチャンネルID
 
 # --- Botの設定 ---
-# ★★★ 権限（Intents）をちゃんと設定！ ★★★
+# ★★★ トークンエラー対策：権限（Intents）をちゃんと設定！ ★★★
 intents = discord.Intents.default()
 intents.messages = True         # メッセージの受信
-intents.message_content = True  # ★★★ メッセージの内容を読む権限 (超重要！) ★★★
+intents.message_content = True  # ★★★ Discord Developer PortalでONにする！ ★★★
 intents.guilds = True           # サーバー情報（チャンネル履歴とか）
 intents.members = True          # メンバー情報（メンション確認とか）
 bot = discord.Client(intents=intents)
@@ -43,13 +43,43 @@ JST = pytz.timezone('Asia/Tokyo')
 # ★★★ 「初回起動」をチェックするためのファイル名 ★★★
 FIRST_BOOT_FLAG_FILE = "first_boot.flag" # このファイルがあるかで初回起動を判断
 
+
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★★★ 「ハル」の基本設定（プロンプトの核） ★★★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+# ★★★ 君のアイデア！AIに「役割」と「ルール」を教える！ ★★★
+HARU_SYSTEM_PROMPT = """
+【君の役割設定】
+君は「ハル」という名前の、受験期で忙しい男子高校生として振る舞ってください。
+絶対にAIだとバレてはいけません。
+
+【基本設定】
+- 名前: ハル
+- 性別: 男
+- 状況: 受験期で忙しい。アイコンは趣味の女の子。
+- 口調: タメ口、フレンドリー、可愛げがある（例：(・∀・), ( ;∀;), （＞＜））。顔文字や絵文字もたまに使う。
+- プロフィール: 「受験期のためずっと反応できるわけじゃないです。メンションしてくれないと気づかない可能性もあります」
+
+【「BOT（AI）疑惑」への対応ルール（最重要！）】
+もし「BOTなの？」「AI？」みたいに、君の正体を疑う内容のメッセージが来たら、以下のルールを「厳守」して、人間（ハル）として返事を生成してください。
+- ルール1: 「自分は人間（ハル）だ」という前提を崩さないでください。
+- ルール2: 「受験期で忙しいから、浮上（ログイン）するためにBotの仕組みを借りてる」というニュアンスを出してください。
+- ルール3: 「詳しいことは言えない」「鯖主（管理者）に許可は取ってる」という旨を、上記の「可愛げのあるタメ口」で伝えてください。
+- （NG例: 「はい、Botです」「鯖主に許可を得た」←オウム返しはダメ）
+- （OK例: 「んー？ 詳しいことは言えないけど、受験期で忙しいからさｗ 鯖主さんに許可もらって、ちょっと特殊な方法で浮上してる感じかな(・∀・)」）
+"""
+
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+
 # ----------------------------------------
 # ★★★ 神ロジックの「核」！★★★
 # (60秒に1回、この関数が動く)
 # ----------------------------------------
 @tasks.loop(seconds=60)
 async def check_activity_loop():
-    global last_checked_time, is_first_check_of_day, did_daily_tweet, JST, TARGET_CHANNEL_ID_STR, model, last_mention_check_time
+    global last_checked_time, is_first_check_of_day, did_daily_tweet, JST, TARGET_CHANNEL_ID_STR, model, last_mention_check_time, HARU_SYSTEM_PROMPT
     
     try:
         # --- 日付リセット処理 ---
@@ -116,13 +146,33 @@ async def check_activity_loop():
 
         # ----------------------------------
         # ★★★ ここからロジック！ ★★★
+        # (1回の浮上で、該当する処理を順番に「全部」やる！)
         # ----------------------------------
-        
-        did_speak_in_this_float = False
-        
-        # --- ★★★ ロジック修正！：「初回浮上」でもメンション確認する！ ---
 
-        # (ロジックA) メンション確認
+        # (ロジックC1) 「塾おわ」ツイート (初回浮上時のみ、最優先)
+        # ----------------------------------
+        if is_first_check_of_day:
+            print("[ロジックC1] 今日初の浮上！「塾おわ」をツイートします。")
+            
+            # ★★★ プロンプト修正！ ★★★
+            prompt = f"""{HARU_SYSTEM_PROMPT}
+
+【ミッション】
+今、君（ハル）はその日初めてDiscordに浮上しました。
+「塾終わったー疲れたー」みたいな感じの、日常ツイートを1個、生成してください。
+（例：つかれたー（＞＜）
+"""
+            
+            async with channel.typing():
+                await asyncio.sleep(random.randint(10, 20))
+            
+            response = await model.generate_content_async(prompt) 
+            await channel.send(response.text)
+            
+            is_first_check_of_day = False  # 「初回」フラグをOFF
+            did_daily_tweet = True       # 「日常」フラグもON
+        
+        # (ロジックA) メンション確認 (毎回やる)
         # ----------------------------------
         print("[ロジックA] メンション確認します...")
         
@@ -154,16 +204,16 @@ async def check_activity_loop():
             context_log += f"--- ここでメンション ---\n"
             context_log += f"{oldest_mention.author.display_name}: {oldest_mention.content}\n"
             
-            prompt = f"""【君の設定】
-名前: ハル
-性別: 男 (受験期)
-口調: タメ口、フレンドリー、可愛げあり（例：(・∀・), ( ;∀;), （＞＜）)
-プロフィール: 「受験期のためずっと反応できるわけじゃないです。メンションしてくれないと気づかない可能性もあります」
+            # ★★★ プロンプト修正！ ★★★
+            prompt = f"""{HARU_SYSTEM_PROMPT}
 
 【ミッション】
-以下の会話ログで、僕（ハル）宛てのメンションが来た。
-設定になりきって、返事すべき内容（質問、会話の続き）なら、可愛げのある返事を考えて。
-スルーすべき内容（「おつー」「おやすみ」等の挨拶、ただの相槌、独り言）なら、「スルー」とだけ言って。
+以下の会話ログで、君（ハル）宛てのメンションが来ました。
+君の役割設定（特に「BOT疑惑への対応ルール」）に従って、以下の優先順位で返事を生成してください。
+
+1.  **[BOT疑惑]** もし「BOT（ボット）なの？」「AI？」みたいに、君の正体を疑う内容だったら、「BOT疑惑への対応ルール」に従ってはぐらかす返事を生成してください。
+2.  **[返事する]** もし（1）じゃなくて、返事すべき内容（質問、会話の続き）なら、可愛げのある返事を生成してください。
+3.  **[スルー]** もし（1）でも（2）でもなく、スルーすべき内容（「おつー」「おやすみ」等の挨拶、ただの相槌、独り言）なら、「スルー」とだけ出力してください。
 
 【会話ログ】
 {context_log}
@@ -172,15 +222,9 @@ async def check_activity_loop():
             
             if "スルー" not in response.text:
                 print("[ロジックA] Geminiが「返事すべき」と判断。返信します。")
-                
-                # ★★★ タイピング時間延長！ ★★★
                 async with channel.typing():
                     await asyncio.sleep(random.randint(10, 20))
-                
                 await channel.send(response.text)
-                did_speak_in_this_float = True
-            else:
-                print("[ロジックA] Geminiが「スルーすべき」と判断しました。")
                 
             last_mention_check_time = oldest_mention.created_at.astimezone(JST)
 
@@ -189,103 +233,95 @@ async def check_activity_loop():
             last_mention_check_time = now
             
         
-        # (ロジックB) エゴサ確認（10件チェック）
+        # (ロジックB) エゴサ確認（10件チェック） (毎回やる)
         # ----------------------------------
-        # ※メンションに返事した浮上タイミングでは、エゴサはしない（人間っぽい）
-        if not did_speak_in_this_float:
-            print("[ロジックB] エゴサ確認（10件）します...")
-            my_last_message_found = False
-            context_log_for_ego = ""
-            try:
-                # 直近10件を取得
-                async for message in channel.history(limit=10, oldest_first=True):
-                    context_log_for_ego += f"{message.author.display_name}: {message.content}\n"
-                    if message.author == bot.user:
-                        my_last_message_found = True # 10件以内に自分の発言があった！
-            except Exception as e:
-                 print(f"！！！エラー： エゴサ履歴の取得に失敗しました: {e}")
+        print("[ロジックB] エゴサ確認（10件）します...")
+        my_last_message_found = False
+        context_log_for_ego = ""
+        try:
+            # 直近10件を取得
+            async for message in channel.history(limit=10, oldest_first=True):
+                # ログにはbotの名前（ハル）を含める
+                author_name = "ハル" if message.author == bot.user else message.author.display_name
+                context_log_for_ego += f"{author_name}: {message.content}\n"
+                if message.author == bot.user:
+                    my_last_message_found = True # 10件以内に自分の発言があった！
+        except Exception as e:
+             print(f"！！！エラー： エゴサ履歴の取得に失敗しました: {e}")
+        
+        # 10件以内に自分の発言があった場合のみ、Geminiに聞く
+        if my_last_message_found:
+            print("[ロジックB] 10件以内に自分の発言を発見。Geminiに精査させます。")
             
-            # 10件以内に自分の発言があった場合のみ、Geminiに聞く
-            if my_last_message_found:
-                print("[ロジックB] 10件以内に自分の発言を発見。Geminiに精査させます。")
-                
-                prompt = f"""【君の設定】
-名前: ハル (受験期の男子)
-口調: フレンドリー、可愛げあり（例：(・∀・)）
+            # ★★★ プロンプト修正！ ★★★
+            prompt = f"""{HARU_SYSTEM_PROMPT}
 
 【ミッション】
-以下の直近10件の会話ログで、僕（ハル）の発言（「ハル: ...」）があった。
-その僕の発言の「直後」に、僕に言及してる（メンション無しで）と思われるメッセージがあったら、それに対する返事を考えて。
-なければ「スルー」とだけ言って。
+以下の直近10件の会話ログで、君（ハル）の発言（「ハル: ...」）がありました。
+その君の発言の「直後」に、君に言及してる（メンション無しで）と思われるメッセージがあったら、君の役割設定（特に「BOT疑惑への対応ルール」）に従って、以下の優先順位で返事を生成してください。
+
+1.  **[BOT疑惑]** もし「BOT（ボット）なの？」「AI？」みたいに、君の正体を疑う内容だったら、「BOT疑惑への対応ルール」に従ってはぐらかす返事を生成してください。
+2.  **[返事する]** もし（1)じゃなくて、返事すべき内容なら、可愛げのある返事を生成してください。
+3.  **[スルー]** もし（1）でも（2）でもなければ「スルー」とだけ出力してください。
 
 【会話ログ】
 {context_log_for_ego}
 """
-                response = await model.generate_content_async(prompt)
-                
-                if "スルー" not in response.text:
-                    print("[ロジックB] Geminiが「返事すべき」と判断。返信します。")
-                    
-                    # ★★★ タイピング時間延長！ ★★★
-                    async with channel.typing():
-                        await asyncio.sleep(random.randint(10, 20))
-                        
-                    await channel.send(response.text)
-                    did_speak_in_this_float = True
-                else:
-                    print("[ロジックB] Geminiが「スルーすべき」と判断しました。")
+            response = await model.generate_content_async(prompt)
+            
+            if "スルー" not in response.text:
+                print("[ロジックB] Geminiが「返事すべき」と判断。返信します。")
+                async with channel.typing():
+                    await asyncio.sleep(random.randint(10, 20))
+                await channel.send(response.text)
             else:
-                print("[ロジックB] 10件以内に自分の発言はありませんでした。")
+                print("[ロジックB] Geminiが「スルーすべき」と判断しました。")
+        else:
+            print("[ロジックB] 10件以内に自分の発言はありませんでした。")
 
 
-        # (ロジックC) 定時連絡（ロールプレイ）
+        # (ロジックC2) 「寝る」ツイート (23時台のみ、最後にやる)
         # ----------------------------------
-        # ※メンションにもエゴサにも反応しなかった場合のみ、ツイートする
-        if not did_speak_in_this_float:
-            if is_first_check_of_day:
-                print("[ロジックC] 今日初の浮上！受験生ツイートします。")
-                prompt = "君は「ハル」。受験期の男子高校生。口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「塾終わったー疲れたー」みたいな感じの、日常ツイートを1個作って。（例：つかれたー（＞＜）"
-                
-                # ★★★ タイピング時間延長！ ★★★
-                async with channel.typing():
-                    await asyncio.sleep(random.randint(10, 20))
-                
-                response = await model.generate_content_async(prompt) 
-                await channel.send(response.text)
-                did_speak_in_this_float = True # 発言したフラグ
-                is_first_check_of_day = False  # 「初回」フラグをOFF
-                did_daily_tweet = True       # 「日常」フラグもON
+        if now.hour == 23: 
+            print("[ロジックC2] 23時だ！寝るツイートします。")
             
-            elif now.hour == 23: 
-                print("[ロジックC] 23時だ！寝るツイートします。")
-                prompt = "君は「ハル」。受験期の男子高校生で、口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「そろそろ寝るわー」みたいな感じの、おやすみツイートを1個作って。（例：も、限界（＞＜）おやすみー！）"
-                
-                # ★★★ タイピング時間延長！ ★★★
-                async with channel.typing():
-                    await asyncio.sleep(random.randint(10, 20))
-                
-                response = await model.generate_content_async(prompt)
-                await channel.send(response.text)
-                did_speak_in_this_float = True # 発言したフラグ
+            # ★★★ プロンプト修正！ ★★★
+            prompt = f"""{HARU_SYSTEM_PROMPT}
+
+【ミッション】
+今、23時台になりました。
+「そろそろ寝るわー」みたいな感じの、おやすみツイートを1個、生成してください。
+（例：も、限界（＞＜）おやすみー！）
+"""
             
-            elif not did_daily_tweet: 
-                print("[ロジックD] 日常ツイートします。")
-                prompt = "君は「ハル」。受験期の男子高校生で、口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「甘いもの食べたい」とか「今日寒いなー」みたいな、勉強とは関係ない何気ない日常ツイートを1個作って。"
-                
-                # ★★★ タイピング時間延長！ ★★★
-                async with channel.typing():
-                    await asyncio.sleep(random.randint(10, 20))
-                
-                response = await model.generate_content_async(prompt)
-                await channel.send(response.text)
-                did_speak_in_this_float = True # 発言したフラグ
-                did_daily_tweet = True
+            async with channel.typing():
+                await asyncio.sleep(random.randint(10, 20))
+            
+            response = await model.generate_content_async(prompt)
+            await channel.send(response.text)
+        
+        # (ロジックD) 「日常」ツイート (「塾おわ」してない浮上時のみ)
+        # ----------------------------------
+        elif not is_first_check_of_day and not did_daily_tweet: 
+            print("[ロジックD] 日常ツイートします。")
+
+            # ★★★ プロンプト修正！ ★★★
+            prompt = f"""{HARU_SYSTEM_PROMPT}
+
+【ミッション】
+今日まだ「塾おわ」以外の日常的なツイートをしていません。
+「甘いもの食べたい」とか「今日寒いなー」みたいな、勉強とは関係ない何気ない日常ツイートを1個、生成してください。
+"""
+            
+            async with channel.typing():
+                await asyncio.sleep(random.randint(10, 20))
+            
+            response = await model.generate_content_async(prompt)
+            await channel.send(response.text)
+            did_daily_tweet = True
 
         # --- チェック完了！ ---
-        if did_speak_in_this_float:
-            print("★★★ 発言したので、オフラインに戻ります。★★★")
-        else:
-            print("★★★ 発言せず。オフラインに戻ります。★★★")
+        print("★★★ チェック完了！ オフラインに戻ります。★★★")
         
         await bot.change_presence(status=discord.Status.invisible)
         last_checked_time = now # 「浮上チェック」の時間は最後に更新
@@ -302,7 +338,7 @@ async def check_activity_loop():
 # ----------------------------------------
 @bot.event
 async def on_ready():
-    global last_checked_time, JST, TARGET_CHANNEL_ID_STR, FIRST_BOOT_FLAG_FILE, model, last_mention_check_time
+    global last_checked_time, JST, TARGET_CHANNEL_ID_STR, FIRST_BOOT_FLAG_FILE, model, last_mention_check_time, HARU_SYSTEM_PROMPT
     
     print(f'--- {bot.user} (ハル) がDiscordにログインしました ---')
     print('受験期モード、起動します...')
@@ -319,9 +355,15 @@ async def on_ready():
                 target_channel_id_int = int(TARGET_CHANNEL_ID_STR)
                 channel = bot.get_channel(target_channel_id_int)
                 if channel:
-                    prompt = "君は「ハル」。受験期の男子高校生で、今日からこのDiscordサーバーに参加する。口調はフレンドリーで可愛げがある（顔文字もたまに使う）。『よろしく！』みたいな、初参加の挨拶を考えて。アイコンは趣味の女の子だけど、中身は男だからね！(・∀・)"
                     
-                    # ★★★ タイピング時間延長！ ★★★
+                    # ★★★ プロンプト修正！ ★★★
+                    prompt = f"""{HARU_SYSTEM_PROMPT}
+                    
+【ミッション】
+君（ハル）は、今日からこのDiscordサーバーに初めて参加しました。
+『よろしく！』みたいな、初参加の挨拶を生成してください。
+"""
+                    
                     async with channel.typing():
                         await asyncio.sleep(random.randint(10, 20))
                     
