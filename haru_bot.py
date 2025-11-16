@@ -16,10 +16,12 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 TARGET_CHANNEL_ID_STR = os.getenv('TARGET_CHANNEL_ID') # 発言するチャンネルID
 
 # --- Botの設定 ---
+# ★★★ 権限（Intents）をちゃんと設定！ ★★★
 intents = discord.Intents.default()
-intents.messages = True
-intents.message_content = True
-intents.guilds = True # メンション確認のためにギルド情報が必要
+intents.messages = True         # メッセージの受信
+intents.message_content = True  # ★★★ メッセージの内容を読む権限 (超重要！) ★★★
+intents.guilds = True           # サーバー情報（チャンネル履歴とか）
+intents.members = True          # メンバー情報（メンション確認とか）
 bot = discord.Client(intents=intents)
 
 # --- Gemini（脳みソ）の設定 ---
@@ -84,7 +86,6 @@ async def check_activity_loop():
             return
 
         # --- よっしゃ！浮上するぜ！ ---
-        # (★タイポ修正済みのつもり！)
         await asyncio.sleep(random.randint(1, 10)) # 1～10秒待つ
         
         print(f"--- ( {now.strftime('%Y-%m-%d %H:%M:%S')} ) ---")
@@ -117,21 +118,19 @@ async def check_activity_loop():
         # ★★★ ここからロジック！ ★★★
         # ----------------------------------
         
-        # メンションやツイートで、もうこの浮上タイミングで発言したか？
         did_speak_in_this_float = False
+        
+        # --- ★★★ ロジック修正！：「初回浮上」でもメンション確認する！ ---
 
-        # (ロジックA) メンション確認 ★★★（ついに実装！）★★★
+        # (ロジックA) メンション確認
         # ----------------------------------
         print("[ロジックA] メンション確認します...")
         
-        # JSTからUTCに変換（.history()はUTCを期待するため）
-        # last_mention_check_time は on_ready で JST でセットされる
         check_after_time_utc = last_mention_check_time.astimezone(pytz.UTC)
         new_check_time_utc = now.astimezone(pytz.UTC) # 今この瞬間のUTC
 
         mentions_found = []
         try:
-            # 履歴をさかのぼってメンションを探す
             async for message in channel.history(after=check_after_time_utc, before=new_check_time_utc, oldest_first=True):
                 if bot.user in message.mentions:
                     mentions_found.append(message)
@@ -144,7 +143,6 @@ async def check_activity_loop():
             oldest_mention = mentions_found[0] # 一番古いメンション
             print(f"[ロジックA] メンション発見！ (from {oldest_mention.author.display_name})")
             
-            # メンションの前3件の会話を「文脈」として取得
             context_log = ""
             try:
                 context_messages = await channel.history(before=oldest_mention, limit=3, oldest_first=True).flatten()
@@ -156,7 +154,6 @@ async def check_activity_loop():
             context_log += f"--- ここでメンション ---\n"
             context_log += f"{oldest_mention.author.display_name}: {oldest_mention.content}\n"
             
-            # Geminiに「返事すべきか」聞く
             prompt = f"""【君の設定】
 名前: ハル
 性別: 男 (受験期)
@@ -175,66 +172,114 @@ async def check_activity_loop():
             
             if "スルー" not in response.text:
                 print("[ロジックA] Geminiが「返事すべき」と判断。返信します。")
+                
+                # ★★★ タイピング時間延長！ ★★★
                 async with channel.typing():
-                    # (★タイポ修正済みのつもり！)
-                    await asyncio.sleep(random.randint(2, 5))
+                    await asyncio.sleep(random.randint(10, 20))
+                
                 await channel.send(response.text)
                 did_speak_in_this_float = True
             else:
                 print("[ロジックA] Geminiが「スルーすべき」と判断しました。")
                 
-            # 「ここまで読んだ」時間を、処理したメンションの時間に更新
             last_mention_check_time = oldest_mention.created_at.astimezone(JST)
 
         else:
             print("[ロジックA] 新しいメンションはありませんでした。")
-            # メンションがなくても、「ここまで読んだ」時間は最新に更新
             last_mention_check_time = now
             
+        
+        # (ロジックB) エゴサ確認（10件チェック）
+        # ----------------------------------
+        # ※メンションに返事した浮上タイミングでは、エゴサはしない（人間っぽい）
+        if not did_speak_in_this_float:
+            print("[ロジックB] エゴサ確認（10件）します...")
+            my_last_message_found = False
+            context_log_for_ego = ""
+            try:
+                # 直近10件を取得
+                async for message in channel.history(limit=10, oldest_first=True):
+                    context_log_for_ego += f"{message.author.display_name}: {message.content}\n"
+                    if message.author == bot.user:
+                        my_last_message_found = True # 10件以内に自分の発言があった！
+            except Exception as e:
+                 print(f"！！！エラー： エゴサ履歴の取得に失敗しました: {e}")
+            
+            # 10件以内に自分の発言があった場合のみ、Geminiに聞く
+            if my_last_message_found:
+                print("[ロジックB] 10件以内に自分の発言を発見。Geminiに精査させます。")
+                
+                prompt = f"""【君の設定】
+名前: ハル (受験期の男子)
+口調: フレンドリー、可愛げあり（例：(・∀・)）
+
+【ミッション】
+以下の直近10件の会話ログで、僕（ハル）の発言（「ハル: ...」）があった。
+その僕の発言の「直後」に、僕に言及してる（メンション無しで）と思われるメッセージがあったら、それに対する返事を考えて。
+なければ「スルー」とだけ言って。
+
+【会話ログ】
+{context_log_for_ego}
+"""
+                response = await model.generate_content_async(prompt)
+                
+                if "スルー" not in response.text:
+                    print("[ロジックB] Geminiが「返事すべき」と判断。返信します。")
+                    
+                    # ★★★ タイピング時間延長！ ★★★
+                    async with channel.typing():
+                        await asyncio.sleep(random.randint(10, 20))
+                        
+                    await channel.send(response.text)
+                    did_speak_in_this_float = True
+                else:
+                    print("[ロジックB] Geminiが「スルーすべき」と判断しました。")
+            else:
+                print("[ロジックB] 10件以内に自分の発言はありませんでした。")
+
 
         # (ロジックC) 定時連絡（ロールプレイ）
         # ----------------------------------
-        # ※メンションに返事した浮上タイミングでは、定時連絡はしない（人間っぽい）
+        # ※メンションにもエゴサにも反応しなかった場合のみ、ツイートする
         if not did_speak_in_this_float:
             if is_first_check_of_day:
                 print("[ロジックC] 今日初の浮上！受験生ツイートします。")
                 prompt = "君は「ハル」。受験期の男子高校生。口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「塾終わったー疲れたー」みたいな感じの、日常ツイートを1個作って。（例：つかれたー（＞＜）"
-                response = await model.generate_content_async(prompt) 
+                
+                # ★★★ タイピング時間延長！ ★★★
                 async with channel.typing():
-                    # (★タイポ修正済みのつもり！)
-                    await asyncio.sleep(random.randint(2, 5))
+                    await asyncio.sleep(random.randint(10, 20))
+                
+                response = await model.generate_content_async(prompt) 
                 await channel.send(response.text)
                 did_speak_in_this_float = True # 発言したフラグ
-                is_first_check_of_day = False
-                did_daily_tweet = True 
-
+                is_first_check_of_day = False  # 「初回」フラグをOFF
+                did_daily_tweet = True       # 「日常」フラグもON
+            
             elif now.hour == 23: 
                 print("[ロジックC] 23時だ！寝るツイートします。")
                 prompt = "君は「ハル」。受験期の男子高校生で、口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「そろそろ寝るわー」みたいな感じの、おやすみツイートを1個作って。（例：も、限界（＞＜）おやすみー！）"
-                response = await model.generate_content_async(prompt)
+                
+                # ★★★ タイピング時間延長！ ★★★
                 async with channel.typing():
-                    # (★タイポ修正済みのつもり！)
-                    await asyncio.sleep(random.randint(2, 5)) 
+                    await asyncio.sleep(random.randint(10, 20))
+                
+                response = await model.generate_content_async(prompt)
                 await channel.send(response.text)
                 did_speak_in_this_float = True # 発言したフラグ
-                
+            
             elif not did_daily_tweet: 
                 print("[ロジックD] 日常ツイートします。")
                 prompt = "君は「ハル」。受験期の男子高校生で、口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「甘いもの食べたい」とか「今日寒いなー」みたいな、勉強とは関係ない何気ない日常ツイートを1個作って。"
-                response = await model.generate_content_async(prompt)
+                
+                # ★★★ タイピング時間延長！ ★★★
                 async with channel.typing():
-                    # (★タイポ修正済みのつもり！)
-                    await asyncio.sleep(random.randint(2, 5)) 
+                    await asyncio.sleep(random.randint(10, 20))
+                
+                response = await model.generate_content_async(prompt)
                 await channel.send(response.text)
                 did_speak_in_this_float = True # 発言したフラグ
                 did_daily_tweet = True
-
-        # (ロジックB) エゴサ確認
-        # ----------------------------------
-        # ※「メンション（リプライ含む）」で拾うことにしたので、エゴサ（リプライじゃない言及）は
-        #    Botの負荷も考えて、いったん「やらない」でおこう！
-        print("[ロジックB] エゴサ確認（リプライ）はロジックAに統合しました。")
-
 
         # --- チェック完了！ ---
         if did_speak_in_this_float:
@@ -275,12 +320,12 @@ async def on_ready():
                 channel = bot.get_channel(target_channel_id_int)
                 if channel:
                     prompt = "君は「ハル」。受験期の男子高校生で、今日からこのDiscordサーバーに参加する。口調はフレンドリーで可愛げがある（顔文字もたまに使う）。『よろしく！』みたいな、初参加の挨拶を考えて。アイコンは趣味の女の子だけど、中身は男だからね！(・∀・)"
-                    response = await model.generate_content_async(prompt) 
                     
+                    # ★★★ タイピング時間延長！ ★★★
                     async with channel.typing():
-                        # (★タイポ修正済みのつもり！)
-                        await asyncio.sleep(random.randint(2, 5))
+                        await asyncio.sleep(random.randint(10, 20))
                     
+                    response = await model.generate_content_async(prompt) 
                     await channel.send(response.text)
                     print(f"初回起動メッセージを {channel.name} に送信しました。")
                     
@@ -298,16 +343,11 @@ async def on_ready():
 
     # ----------------------------------
 
-    # 「最後にチェックした時間」を「昨日」と「今」で初期化
-    # (こうしないと、起動直後に前日のメンションまで拾っちゃう)
     print("チェック時間を現在時刻に初期化します。")
     last_checked_time = datetime.now(JST) - timedelta(days=1) # 「浮上」時間は昨日（日付リセットのため）
     last_mention_check_time = datetime.now(JST) # 「メンション」は今（これ以降のメンションを拾う）
     
-    # ループを開始
     check_activity_loop.start()
-    
-    # 最初は「オフライン（透明）」になって潜伏する
     await bot.change_presence(status=discord.Status.invisible)
 
 # ----------------------------------------
@@ -316,8 +356,15 @@ async def on_ready():
 if DISCORD_TOKEN and GEMINI_API_KEY:
     try:
         print("「ハル」を起動します...")
+        # ★★★ トークンエラーがここで起きるなら、大文字小文字、コピペミス、権限設定が原因！ ★★★
         bot.run(DISCORD_TOKEN)
+    except discord.errors.LoginFailure as e:
+        print("！！！エラー： ログインに失敗しました (LoginFailure)。")
+        print("！！！原因： Discordトークンが間違っているか、古いです。Renderの環境変数を見直して！")
+    except discord.errors.PrivilegedIntentsRequired as e:
+        print("！！！エラー： 権限が足りません (PrivilegedIntentsRequired)。")
+        print("！！！原因： Discord Developer Portal の「MESSAGE CONTENT INTENT」がONになっていません！")
     except Exception as e:
-        print(f"！！！エラー：Botの起動に失敗しました。Discordトークンは合ってる？: {e}")
+        print(f"！！！エラー：Botの起動に失敗しました。: {e}")
 else:
     print("！！！エラー： DISCORD_TOKEN か GEMINI_API_KEY が .env (Secrets) に設定されていません。")
