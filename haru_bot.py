@@ -19,6 +19,7 @@ TARGET_CHANNEL_ID_STR = os.getenv('TARGET_CHANNEL_ID') # 発言するチャン�
 intents = discord.Intents.default()
 intents.messages = True
 intents.message_content = True
+intents.guilds = True # メンション確認のためにギルド情報が必要
 bot = discord.Client(intents=intents)
 
 # --- Gemini（脳みソ）の設定 ---
@@ -31,7 +32,8 @@ except Exception as e:
     exit()
 
 # --- Botが使う変数（状態を記憶する） ---
-last_checked_time = None 
+last_checked_time = None       # 最後に「浮上」した時間
+last_mention_check_time = None # 最後に「メンション」をチェックした時間
 is_first_check_of_day = True
 did_daily_tweet = False
 JST = pytz.timezone('Asia/Tokyo')
@@ -45,7 +47,7 @@ FIRST_BOOT_FLAG_FILE = "first_boot.flag" # このファイルがあるかで初�
 # ----------------------------------------
 @tasks.loop(seconds=60)
 async def check_activity_loop():
-    global last_checked_time, is_first_check_of_day, did_daily_tweet, JST, TARGET_CHANNEL_ID_STR, model
+    global last_checked_time, is_first_check_of_day, did_daily_tweet, JST, TARGET_CHANNEL_ID_STR, model, last_mention_check_time
     
     try:
         # --- 日付リセット処理 ---
@@ -110,115 +112,67 @@ async def check_activity_loop():
             last_checked_time = now # チェック時間は記録
             return
 
-        # --- ここから発言ロジック ---
+        # ----------------------------------
+        # ★★★ ここからロジック！ ★★★
+        # ----------------------------------
         
-        # タイピング中にして「人間っぽさ」を出す
-        async with channel.typing():
-            await asyncio.sleep(random.randint(2, 5)) # 2～5秒タイピング中…
+        # メンションやツイートで、もうこの浮上タイミングで発言したか？
+        did_speak_in_this_float = False
 
-        # (ロジックC) 定時連絡（ロールプレイ）
-        if is_first_check_of_day:
-            print("[ロジックC] 今日初の浮上！受験生ツイートします。")
-            # ★★★ 「可愛げ男子」設定に書き換え！ ★★★
-            prompt = "君は「ハル」。受験期の男子高校生。口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「塾終わったー疲れたー」みたいな感じの、日常ツイートを1個作って。（例：つかれたー（＞＜）"
-            response = await model.generate_content_async(prompt) 
-            await channel.send(response.text)
-            is_first_check_of_day = False
-            did_daily_tweet = True 
+        # (ロジックA) メンション確認 ★★★（ついに実装！）★★★
+        # ----------------------------------
+        print("[ロジックA] メンション確認します...")
+        
+        # JSTからUTCに変換（.history()はUTCを期待するため）
+        # last_mention_check_time は on_ready で JST でセットされる
+        check_after_time_utc = last_mention_check_time.astimezone(pytz.UTC)
+        new_check_time_utc = now.astimezone(pytz.UTC) # 今この瞬間のUTC
 
-        # (ロジックC) 寝るツイート
-        elif now.hour == 23: 
-            print("[ロジックC] 23時だ！寝るツイートします。")
-            # ★★★ 「可愛げ男子」設定に書き換え！ ★★★
-            prompt = "君は「ハル」。受験期の男子高校生で、口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「そろそろ寝るわー」みたいな感じの、おやすみツイートを1個作って。（例：も、限界（＞＜）おやすみー！）"
-            response = await model.generate_content_async(prompt) 
-            await channel.send(response.text)
+        mentions_found = []
+        try:
+            # 履歴をさかのぼってメンションを探す
+            async for message in channel.history(after=check_after_time_utc, before=new_check_time_utc, oldest_first=True):
+                if bot.user in message.mentions:
+                    mentions_found.append(message)
+                    
+        except Exception as e:
+            print(f"！！！エラー： メンション履歴の取得に失敗しました: {e}")
+
+        # メンションが見つかったら、1件だけ処理する
+        if mentions_found:
+            oldest_mention = mentions_found[0] # 一番古いメンション
+            print(f"[ロジックA] メンション発見！ (from {oldest_mention.author.display_name})")
             
-        # (ロジックD) 日常ツイート（1日1回）
-        elif not did_daily_tweet: 
-            print("[ロジックD] 日常ツイートします。")
-            # ★★★ 「可愛げ男子」設定に書き換え！ ★★★
-            prompt = "君は「ハル」。受験期の男子高校生で、口調はフレンドリーで可愛げがある（顔文字もたまに使う）。「甘いもの食べたい」とか「今日寒いなー」みたいな、勉強とは関係ない何気ない日常ツイートを1個作って。"
-            response = await model.generate_content_async(prompt)
-            await channel.send(response.text)
-            did_daily_tweet = True
-
-        # (ロジックA) メンション確認
-        print("[ロジックA] メンション確認します（まだ機能してません）")
-        
-        # (ロジックB) エゴサ確認
-        print("[ロジックB] エゴサ確認します（まだ機能してません）")
-
-        # --- チェック完了！ ---
-        print("★★★ チェック完了！ オフラインに戻ります。★★★")
-        
-        await bot.change_presence(status=discord.Status.invisible)
-        last_checked_time = now
-        
-    except Exception as e:
-        print(f"！！！エラー：ループ処理中に何か起きました: {e}")
-        await bot.change_presence(status=discord.Status.invisible)
-        last_checked_time = now 
-
-
-# ----------------------------------------
-# Botが起動したときに呼ばれる処理
-# ----------------------------------------
-@bot.event
-async def on_ready():
-    global last_checked_time, JST, TARGET_CHANNEL_ID_STR, FIRST_BOOT_FLAG_FILE, model
-    
-    print(f'--- {bot.user} (ハル) がDiscordにログインしました ---')
-    print('受験期モード、起動します...')
-
-    # ----------------------------------
-    # ★★★ 初回起動メッセージ（君のリクエスト！） ★★★
-    # ----------------------------------
-    if not TARGET_CHANNEL_ID_STR:
-        print("！！！警告： TARGET_CHANNEL_ID が設定されてないため、初回起動メッセージは送れません。")
-    else:
-        if not os.path.exists(FIRST_BOOT_FLAG_FILE):
-            print("★★★ 初回起動を検知！ ★★★")
+            # メンションの前3件の会話を「文脈」として取得
+            context_log = ""
             try:
-                target_channel_id_int = int(TARGET_CHANNEL_ID_STR)
-                channel = bot.get_channel(target_channel_id_int)
-                if channel:
-                    # ★★★ 「可愛げ男子」設定に書き換え！ ★★★
-                    prompt = "君は「ハル」。受験期の男子高校生で、今日からこのDiscordサーバーに参加する。口調はフレンドリーで可愛げがある（顔文字もたまに使う）。『よろしく！』みたいな、初参加の挨拶を考えて。アイコンは趣味の女の子だけど、中身は男だからね！(・∀・)"
-                    response = await model.generate_content_async(prompt) 
-                    
-                    async with channel.typing():
-                        await asyncio.sleep(random.randint(2, 5))
-                    
-                    await channel.send(response.text)
-                    print(f"初回起動メッセージを {channel.name} に送信しました。")
-                    
-                    with open(FIRST_BOOT_FLAG_FILE, 'w') as f:
-                        f.write(datetime.now(JST).isoformat())
-                    print(f"「{FIRST_BOOT_FLAG_FILE}」を作成しました。もう初回起動メッセージは送りません。")
-                
-                else:
-                    print(f"！！！エラー： 初回起動メッセージを送るチャンネルID ({TARGET_CHANNEL_ID_STR}) が見つかりません。")
-            
+                context_messages = await channel.history(before=oldest_mention, limit=3, oldest_first=True).flatten()
+                for ctx_msg in context_messages:
+                    context_log += f"{ctx_msg.author.display_name}: {ctx_msg.content}\n"
             except Exception as e:
-                print(f"！！！エラー： 初回起動メッセージの送信に失敗しました: {e}")
-        else:
-            print(f"「{FIRST_BOOT_FLAG_FILE}」が存在するため、初回起動メッセージはスキップします。")
+                print(f"！！！警告： メンション前の文脈取得に失敗: {e}")
+                
+            context_log += f"--- ここでメンション ---\n"
+            context_log += f"{oldest_mention.author.display_name}: {oldest_mention.content}\n"
+            
+            # Geminiに「返事すべきか」聞く
+            prompt = f"""【君の設定】
+名前: ハル
+性別: 男 (受験期)
+口調: タメ口、フレンドリー、可愛げあり（例：(・∀・), ( ;∀;), （＞＜）)
+プロフィール: 「受験期のためずっと反応できるわけじゃないです。メンションしてくれないと気づかない可能性もあります」
 
-    # ----------------------------------
+【ミッション】
+以下の会話ログで、僕（ハル）宛てのメンションが来た。
+設定になりきって、返事すべき内容（質問、会話の続き）なら、可愛げのある返事を考えて。
+スルーすべき内容（「おつー」「おやすみ」等の挨拶、ただの相槌、独り言）なら、「スルー」とだけ言って。
 
-    last_checked_time = datetime.now(JST) - timedelta(days=1) 
-    check_activity_loop.start()
-    await bot.change_presence(status=discord.Status.invisible)
-
-# ----------------------------------------
-# Botを起動！
-# ----------------------------------------
-if DISCORD_TOKEN and GEMINI_API_KEY:
-    try:
-        print("「ハル」を起動します...")
-        bot.run(DISCORD_TOKEN)
-    except Exception as e:
-        print(f"！！！エラー：Botの起動に失敗しました。Discordトークンは合ってる？: {e}")
-else:
-    print("！！！エラー： DISCORD_TOKEN か GEMINI_API_KEY が .env (Secrets) に設定されていません。")
+【会話ログ】
+{context_log}
+"""
+            response = await model.generate_content_async(prompt)
+            
+            if "スルー" not in response.text:
+                print("[ロジックA] Geminiが「返事すべき」と判断。返信します。")
+                async with channel.typing():
+                    await asyncio.sleep(random.
